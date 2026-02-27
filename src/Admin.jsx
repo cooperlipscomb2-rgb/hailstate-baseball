@@ -1,5 +1,132 @@
 import { useState, useEffect } from "react";
 import { supabase } from "./supabase";
+import * as pdfjsLib from "pdfjs-dist";
+import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
+
+// Parse MSU box score PDF text into structured data
+function parseBoxScore(text) {
+  // --- Game info ---
+  const oppMatch = text.match(/^(.+?)\s*\(\d+-\d+\)\s*-vs-/);
+  const opponent = oppMatch ? oppMatch[1].trim() : "";
+
+  const dateMatch = text.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  let date = "";
+  if (dateMatch) {
+    const [, m, d, y] = dateMatch;
+    date = `${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;
+  }
+
+  const isHome = text.includes("Starkville") || text.includes("Dudy Noble");
+  const location = isHome ? "home" : "away";
+
+  // Scores — most reliable source is the score header above each batting table
+  // Format: "Mississippi State 7\nPlayer AB..." and "Hofstra 5\nPlayer AB..."
+  const msuScoreMatch = text.match(/Mississippi State (\d+)\s+Player/);
+  const msuScore = msuScoreMatch ? parseInt(msuScoreMatch[1]) : 0;
+
+  const oppScoreMatch = text.match(new RegExp(opponent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "\\s+(\\d+)\\s+Player"));
+  const oppScore = oppScoreMatch ? parseInt(oppScoreMatch[1]) : 0;
+
+  const result = msuScore > oppScore ? "W" : "L";
+
+  // --- MSU Batting ---
+  // Find everything between "Mississippi State N\nPlayer AB..." and "Totals"
+  const msuBatSection = text.match(/Mississippi State \d+\s+Player AB R H RBI BB SO LOB\s+([\s\S]+?)\s+Totals/);
+  const battingRows = [];
+
+  if (msuBatSection) {
+    const batText = msuBatSection[1];
+    // Each player line: "Name pos AB R H RBI BB SO LOB"
+    // Name can have spaces, pos can be compound like rf/cf, ph/1b
+    const playerLineRegex = /([A-Z][a-zA-Z]+ [A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s+([\w\/]+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/g;
+    let match;
+    while ((match = playerLineRegex.exec(batText)) !== null) {
+      const [, name, pos, ab, r, h, rbi, bb, so, lob] = match;
+      if (pos === "p") continue;
+      if (parseInt(ab) === 0) continue;
+      const nameParts = name.trim().split(" ");
+      const nameLast = nameParts[nameParts.length - 1].toLowerCase().replace(/(.)\1+/g, '$1');
+      const player = PLAYERS.find(p => {
+        const pLast = p.name.toLowerCase().split(" ").pop().replace(/(.)\1+/g, '$1');
+        return nameLast === pLast;
+      });
+      if (player) {
+        // If player already exists, add stats (for substitutions)
+        const existing = battingRows.find(r => r.playerId === player.id);
+        if (existing) {
+          existing.ab += parseInt(ab); existing.r += parseInt(r); existing.h += parseInt(h);
+          existing.rbi += parseInt(rbi); existing.bb += parseInt(bb); existing.so += parseInt(so);
+          existing.lob += parseInt(lob);
+        } else {
+          battingRows.push({
+            playerId: player.id,
+            ab: parseInt(ab), r: parseInt(r), h: parseInt(h),
+            rbi: parseInt(rbi), bb: parseInt(bb), so: parseInt(so), lob: parseInt(lob)
+          });
+        }
+      }
+    }
+  }
+
+  // --- MSU Pitching ---
+  const msuPitchStart = text.lastIndexOf("Mississippi State IP H R ER BB SO");
+  const pitchingRows = [];
+
+  if (msuPitchStart >= 0) {
+    const pitchBlock = text.substring(msuPitchStart, msuPitchStart + 800);
+    const pitchLineRegex = /([A-Z][a-zA-Z]+ [A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s*(?:\([WLS],\s*[\d-]+\))?\s+(\d+\.\d+|\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/g;
+    let match;
+    while ((match = pitchLineRegex.exec(pitchBlock)) !== null) {
+      const [, name, ip, h, r, er, bb, so] = match;
+      if (name.startsWith("Mississippi") || name.startsWith("Totals")) continue;
+      const pitchNameParts = name.trim().split(" ");
+      const pitchNameLast = pitchNameParts[pitchNameParts.length - 1].toLowerCase().replace(/(.)\1+/g, '$1');
+      const pitcher = PITCHERS.find(p => {
+        const pNameClean = p.name.toLowerCase().replace(/\s+jr\.?|\s+sr\.?/g, '');
+        const pLast = pNameClean.split(" ").pop().replace(/(.)\1+/g, '$1');
+        return pitchNameLast === pLast;
+      });
+      if (pitcher && !pitchingRows.find(r => r.pitcherId === pitcher.id)) {
+        pitchingRows.push({
+          pitcherId: pitcher.id,
+          ip: parseFloat(ip), h: parseInt(h), r: parseInt(r),
+          er: parseInt(er), bb: parseInt(bb), so: parseInt(so), sv: false
+        });
+      }
+    }
+  }
+
+  // --- Save ---
+  const saveMatch = text.match(/Save:\s*([^\(]+)/);
+  if (saveMatch) {
+    const saveName = saveMatch[1].trim();
+    const savedRow = pitchingRows.find(row => {
+      const p = PITCHERS.find(p => p.id === row.pitcherId);
+      const pLast = p ? p.name.toLowerCase().split(" ").pop() : "";
+      return saveName.toLowerCase().includes(pLast);
+    });
+    if (savedRow) savedRow.sv = true;
+  }
+
+  // --- Notes --- stop before any pitching table
+  const noteLabels = ["2B:", "3B:", "HR:", "SB:", "CS:", "HBP:", "SF:"];
+  const noteLines = [];
+  noteLabels.forEach(label => {
+    const match = text.match(new RegExp(label + "([^\n]+?)(?=\\s+(?:2B:|3B:|HR:|SB:|CS:|HBP:|SF:|[A-Z][a-z]+,|Alcorn|Hofstra|Delaware|Troy|Arizona|Play By Play|Start:))"));
+    if (match) noteLines.push(label + match[1].trim());
+    else {
+      // simpler fallback — just grab to end of that token
+      const simple = text.match(new RegExp(label + "([^H][^\n]{0,120})"));
+      if (simple) noteLines.push(label + simple[1].trim());
+    }
+  });
+  const notes = noteLines.join(" ");
+
+  return { opponent, date, location, result, msuScore, oppScore, battingRows, pitchingRows, notes };
+}
+
+
 
 const COLORS = {
   maroon: "#5D1A2A",
@@ -23,7 +150,7 @@ const PLAYERS = [
   { id: 1,  name: "Jacob Parker",    number: 2,  pos: "OF" },
   { id: 2,  name: "Ace Reese",       number: 3,  pos: "INF" },
   { id: 3,  name: "Aidan Teel",      number: 5,  pos: "OF" },
-  { id: 4,  name: "James Nunnallee", number: 6,  pos: "OF" },
+  { id: 4,  name: "James Nunnalee", number: 6,  pos: "OF" },
   { id: 5,  name: "Reed Stallman",   number: 7,  pos: "1B/OF" },
   { id: 6,  name: "Ryder Woodson",   number: 9,  pos: "INF" },
   { id: 7,  name: "Drew Wyers",      number: 10, pos: "INF" },
@@ -206,7 +333,82 @@ export default function AdminPage() {
     setTimeout(() => setShowToast(false), 3000);
   };
 
-  const updateBat = (id, field, val) => setBatting(prev => ({ ...prev, [id]: { ...prev[id], [field]: val } }));
+  const handleDelete = async (gameId) => {
+    if (!window.confirm("Delete this game and all its stats? This cannot be undone.")) return;
+    try {
+      await supabase.from("batting_stats").delete().eq("game_id", gameId);
+      await supabase.from("pitching_stats").delete().eq("game_id", gameId);
+      const { error } = await supabase.from("games").delete().eq("id", gameId);
+      if (error) throw error;
+      showMsg("✓ Game deleted");
+      fetchGames();
+    } catch (e) {
+      showMsg("✗ Delete failed: " + e.message, true);
+    }
+  };
+
+  const [parsing, setParsing] = useState(false);
+
+  const handlePDF = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setParsing(true);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let fullText = "";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        fullText += content.items.map(item => item.str).join(" ") + "\n";
+      }
+      // Normalize spaces and parse
+      const normalized = fullText.replace(/ +/g, " ").replace(/\r/g, "");
+      const parsed = parseBoxScore(normalized);
+
+      // Fill in game info
+      setOpponent(parsed.opponent);
+      setDate(parsed.date);
+      setLocation(parsed.location);
+      setResult(parsed.result);
+      setMsScore(String(parsed.msuScore));
+      setOppScore(String(parsed.oppScore));
+      setNotes("");
+
+      // Fill in batting
+      const newBatting = {};
+      PLAYERS.forEach(p => { newBatting[p.id] = emptyBatting(); });
+      parsed.battingRows.forEach(row => {
+        newBatting[row.playerId] = {
+          played: true,
+          ab: String(row.ab), r: String(row.r), h: String(row.h),
+          rbi: String(row.rbi), bb: String(row.bb), so: String(row.so), lob: String(row.lob)
+        };
+      });
+      setBatting(newBatting);
+
+      // Fill in pitching
+      const newPitching = {};
+      PITCHERS.forEach(p => { newPitching[p.id] = emptyPitching(); });
+      parsed.pitchingRows.forEach(row => {
+        newPitching[row.pitcherId] = {
+          pitched: true,
+          ip: String(row.ip), h: String(row.h), r: String(row.r),
+          er: String(row.er), bb: String(row.bb), so: String(row.so), sv: row.sv
+        };
+      });
+      setPitching(newPitching);
+
+      showMsg(`✓ PDF parsed! Review and save.`);
+    } catch (err) {
+      console.error(err);
+      showMsg("✗ PDF parse failed — enter manually", true);
+    } finally {
+      setParsing(false);
+      e.target.value = "";
+    }
+  };
+
   const updatePitch = (id, field, val) => setPitching(prev => ({ ...prev, [id]: { ...prev[id], [field]: val } }));
   const togglePlayed = (id) => setBatting(prev => ({ ...prev, [id]: { ...prev[id], played: !prev[id].played } }));
   const togglePitched = (id) => setPitching(prev => ({ ...prev, [id]: { ...prev[id], pitched: !prev[id].pitched } }));
@@ -338,8 +540,14 @@ export default function AdminPage() {
                   <div className="sg-opp">{g.opponent}</div>
                   <div className="sg-date">{g.date} · {g.location === "home" ? "Home" : g.location === "neutral" ? "Neutral" : "Away"}</div>
                 </div>
-                <div className={`sg-result sg-${g.result.toLowerCase()}`}>
-                  {g.result} {g.msu_score}-{g.opp_score}
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div className={`sg-result sg-${g.result.toLowerCase()}`}>
+                    {g.result} {g.msu_score}-{g.opp_score}
+                  </div>
+                  <button
+                    onClick={() => handleDelete(g.id)}
+                    style={{ background: "#FFEBEE", color: "#C62828", border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                  >✕</button>
                 </div>
               </div>
             ))}
@@ -348,7 +556,26 @@ export default function AdminPage() {
 
         {tab === "entry" && (
           <>
-            {/* GAME INFO */}
+            {/* PDF UPLOAD */}
+            <div className="section">
+              <div className="section-head">
+                <div className="section-head-title">Upload Box Score</div>
+                <div className="section-head-sub">Auto-fills form from PDF</div>
+              </div>
+              <div className="section-body">
+                <label style={{
+                  display: "block", padding: "14px", background: parsing ? "#F4F1EE" : "#5D1A2A",
+                  borderRadius: 10, textAlign: "center", cursor: parsing ? "default" : "pointer",
+                  color: "white", fontFamily: "'Playfair Display', serif", fontSize: 16, fontWeight: 700
+                }}>
+                  {parsing ? "Parsing PDF..." : "📄 Choose Box Score PDF"}
+                  <input type="file" accept=".pdf" onChange={handlePDF} style={{ display: "none" }} disabled={parsing} />
+                </label>
+                <div style={{ fontSize: 11, color: "#B0A89E", textAlign: "center", marginTop: 8 }}>
+                  Download from HailState.com → Baseball → Schedule → Box Score
+                </div>
+              </div>
+            </div>
             <div className="section">
               <div className="section-head">
                 <div className="section-head-title">Game Info</div>
