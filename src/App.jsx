@@ -368,7 +368,7 @@ function RosterPage({ batting, pitching }) {
             <div key={p.id} className="player-card">
               <div className="player-card-top">
                 <div className="player-info">
-                  <div className="player-number">{PLAYERS.find(pl => pl.id === p.id)?.number || p.games}</div>
+                  <div className="player-number"><span style={{fontSize:9, opacity:0.7}}>#</span>{PLAYERS.find(pl => pl.id === p.id)?.number || p.games}</div>
                   <div>
                     <div className="player-name">{p.name}</div>
                     <div className="player-meta">{p.games} game{p.games !== 1 ? "s" : ""} · {p.ab} AB</div>
@@ -400,7 +400,7 @@ function RosterPage({ batting, pitching }) {
             <div key={p.id} className="pitcher-card">
               <div className="pitcher-top">
                 <div className="player-info">
-                  <div className="player-number" style={{ fontSize: 12 }}>{PITCHERS.find(pi => pi.id === p.id)?.number || p.app}</div>
+                  <div className="player-number" style={{ fontSize: 12 }}><span style={{fontSize:9, opacity:0.7}}>#</span>{PITCHERS.find(pi => pi.id === p.id)?.number || p.app}</div>
                   <div>
                     <div className="player-name">{p.name}</div>
                     <div className="player-meta" style={{ display: "flex", gap: 6 }}>
