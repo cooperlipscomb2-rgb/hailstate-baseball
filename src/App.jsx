@@ -19,7 +19,54 @@ const COLORS = {
   redLight: "#FFEBEE",
 };
 
-const styles = `
+const PLAYERS = [
+  { id: 1,  name: "Jacob Parker",    number: 2  },
+  { id: 2,  name: "Ace Reese",       number: 3  },
+  { id: 3,  name: "Aidan Teel",      number: 5  },
+  { id: 4,  name: "James Nunnalee",  number: 6  },
+  { id: 5,  name: "Reed Stallman",   number: 7  },
+  { id: 6,  name: "Ryder Woodson",   number: 9  },
+  { id: 7,  name: "Drew Wyers",      number: 10 },
+  { id: 8,  name: "Chone James",     number: 12 },
+  { id: 9,  name: "Vytas Valincius", number: 14 },
+  { id: 10, name: "Noah Sullivan",   number: 18 },
+  { id: 11, name: "Andrew Raymond",  number: 19 },
+  { id: 12, name: "Kevin Milewski",  number: 21 },
+  { id: 13, name: "Nick Frontino",   number: 22 },
+  { id: 14, name: "Jackson Owen",    number: 23 },
+  { id: 15, name: "Peter Mershon",   number: 27 },
+  { id: 16, name: "Blake Bevis",     number: 33 },
+  { id: 17, name: "Gehrig Frei",     number: 34 },
+  { id: 18, name: "Bryce Chance",    number: 38 },
+  { id: 19, name: "Charlie Wortham", number: 31 },
+  { id: 20, name: "Gatlin Sanders",  number: 49 },
+];
+
+const PITCHERS = [
+  { id: 1,  name: "Tomas Valincius",       number: 4  },
+  { id: 2,  name: "Charlie Foster",        number: 8  },
+  { id: 3,  name: "Duke Stone",            number: 11 },
+  { id: 4,  name: "William Kirk",          number: 13 },
+  { id: 5,  name: "Tanner Beliveau",       number: 15 },
+  { id: 6,  name: "Braden Booth",          number: 16 },
+  { id: 7,  name: "Parker Rhodes",         number: 17 },
+  { id: 8,  name: "Maddox Miller",         number: 20 },
+  { id: 9,  name: "Jack Bauer",            number: 24 },
+  { id: 10, name: "Chris Billingsley Jr.", number: 25 },
+  { id: 11, name: "Ryan McPherson",        number: 28 },
+  { id: 12, name: "Maddox Webb",           number: 29 },
+  { id: 13, name: "Jackson Logar",         number: 30 },
+  { id: 14, name: "Peyton Fowler",         number: 32 },
+  { id: 15, name: "Ben Davis",             number: 35 },
+  { id: 16, name: "Tyler Pitzer",          number: 36 },
+  { id: 17, name: "Brendan Sweeney",       number: 37 },
+  { id: 18, name: "Patrick Spencer Jr.",   number: 39 },
+  { id: 19, name: "Jack Gleason",          number: 42 },
+  { id: 20, name: "Dane Burns",            number: 45 },
+  { id: 21, name: "JT Schnoor",            number: 47 },
+];
+
+
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Source+Sans+3:wght@300;400;600;700&display=swap');
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Source Sans 3', sans-serif; background: #FAF8F6; color: #2C2420; max-width: 430px; margin: 0 auto; min-height: 100vh; }
@@ -321,7 +368,7 @@ function RosterPage({ batting, pitching }) {
             <div key={p.id} className="player-card">
               <div className="player-card-top">
                 <div className="player-info">
-                  <div className="player-number">{p.games}</div>
+                  <div className="player-number">{PLAYERS.find(pl => pl.id === p.id)?.number || p.games}</div>
                   <div>
                     <div className="player-name">{p.name}</div>
                     <div className="player-meta">{p.games} game{p.games !== 1 ? "s" : ""} · {p.ab} AB</div>
@@ -353,7 +400,7 @@ function RosterPage({ batting, pitching }) {
             <div key={p.id} className="pitcher-card">
               <div className="pitcher-top">
                 <div className="player-info">
-                  <div className="player-number" style={{ fontSize: 12 }}>{p.app}</div>
+                  <div className="player-number" style={{ fontSize: 12 }}>{PITCHERS.find(pi => pi.id === p.id)?.number || p.app}</div>
                   <div>
                     <div className="player-name">{p.name}</div>
                     <div className="player-meta" style={{ display: "flex", gap: 6 }}>
