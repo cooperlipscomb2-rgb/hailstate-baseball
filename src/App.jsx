@@ -66,7 +66,7 @@ const PITCHERS = [
   { id: 21, name: "JT Schnoor",            number: 47 },
 ];
 
-
+const styles = `
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Source+Sans+3:wght@300;400;600;700&display=swap');
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Source Sans 3', sans-serif; background: #FAF8F6; color: #2C2420; max-width: 430px; margin: 0 auto; min-height: 100vh; }
