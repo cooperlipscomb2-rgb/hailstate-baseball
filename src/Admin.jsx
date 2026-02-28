@@ -6,53 +6,63 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
 
 // Parse MSU box score PDF text into structured data
 function parseBoxScore(text) {
-  // --- Game info ---
-  const oppMatch = text.match(/^(.+?)\s*\(\d+-\d+\)\s*-vs-/);
-  const opponent = oppMatch ? oppMatch[1].trim() : "";
+  // Normalize "Mississippi St." to "Mississippi State" throughout
+  const normalized = text.replace(/Mississippi St\./g, "Mississippi State");
 
-  const dateMatch = text.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  // --- Game info ---
+  const oppMatch = normalized.match(/^#?\s*(.+?)\s*\(\d+-\d+\)\s*-vs-/);
+  const opponent = oppMatch ? oppMatch[1].replace(/^#\s*\d+\s*/, "").trim() : "";
+
+  const dateMatch = normalized.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   let date = "";
   if (dateMatch) {
     const [, m, d, y] = dateMatch;
     date = `${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;
   }
 
-  const isHome = text.includes("Starkville") || text.includes("Dudy Noble");
-  const location = isHome ? "home" : "away";
+  const isHome = normalized.includes("Starkville") || normalized.includes("Dudy Noble");
+  const isAway = !isHome;
+  // Neutral if away but not a known away venue — check for neutral keywords
+  const isNeutral = isAway && (normalized.includes("Arlington") || normalized.includes("Neutral") || normalized.match(/at .+?,\s*[A-Z]{2}/));
+  const location = isHome ? "home" : isNeutral ? "neutral" : "away";
 
-  // Scores — most reliable source is the score header above each batting table
-  // Format: "Mississippi State 7\nPlayer AB..." and "Hofstra 5\nPlayer AB..."
-  const msuScoreMatch = text.match(/Mississippi State (\d+)\s+Player/);
+  // Scores
+  const msuScoreMatch = normalized.match(/Mississippi State (\d+)\s+Player/);
   const msuScore = msuScoreMatch ? parseInt(msuScoreMatch[1]) : 0;
 
-  const oppScoreMatch = text.match(new RegExp(opponent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "\\s+(\\d+)\\s+Player"));
+  const oppScoreMatch = normalized.match(new RegExp(opponent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "\\s+(\\d+)\\s+Player"));
   const oppScore = oppScoreMatch ? parseInt(oppScoreMatch[1]) : 0;
 
   const result = msuScore > oppScore ? "W" : "L";
 
   // --- MSU Batting ---
-  // Find everything between "Mississippi State N\nPlayer AB..." and "Totals"
-  const msuBatSection = text.match(/Mississippi State \d+\s+Player AB R H RBI BB SO LOB\s+([\s\S]+?)\s+Totals/);
+  const msuBatSection = normalized.match(/Mississippi State \d+\s+Player AB R H RBI BB SO LOB\s+([\s\S]+?)\s+Totals/);
   const battingRows = [];
 
   if (msuBatSection) {
     const batText = msuBatSection[1];
-    // Each player line: "Name pos AB R H RBI BB SO LOB"
-    // Name can have spaces, pos can be compound like rf/cf, ph/1b
-    const playerLineRegex = /([A-Z][a-zA-Z]+ [A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s+([\w\/]+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/g;
+    // Handle both "First Last pos" and "Last, First pos" formats
+    const playerLineRegex = /([A-Z][a-zA-Z,]+ [A-Z]?[a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s+([\w\/]+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/g;
     let match;
     while ((match = playerLineRegex.exec(batText)) !== null) {
       const [, name, pos, ab, r, h, rbi, bb, so, lob] = match;
       if (pos === "p") continue;
       if (parseInt(ab) === 0) continue;
+
+      // Handle "Last, First" format by extracting last name before comma
       const nameParts = name.trim().split(" ");
-      const nameLast = nameParts[nameParts.length - 1].toLowerCase().replace(/(.)\1+/g, '$1');
+      let nameLast;
+      if (name.includes(",")) {
+        nameLast = name.split(",")[0].trim().toLowerCase().replace(/(.)\1+/g, '$1');
+      } else {
+        nameLast = nameParts[nameParts.length - 1].toLowerCase().replace(/(.)\1+/g, '$1');
+      }
+
       const player = PLAYERS.find(p => {
         const pLast = p.name.toLowerCase().split(" ").pop().replace(/(.)\1+/g, '$1');
         return nameLast === pLast;
       });
       if (player) {
-        // If player already exists, add stats (for substitutions)
         const existing = battingRows.find(r => r.playerId === player.id);
         if (existing) {
           existing.ab += parseInt(ab); existing.r += parseInt(r); existing.h += parseInt(h);
@@ -70,18 +80,26 @@ function parseBoxScore(text) {
   }
 
   // --- MSU Pitching ---
-  const msuPitchStart = text.lastIndexOf("Mississippi State IP H R ER BB SO");
+  const msuPitchStart = normalized.lastIndexOf("Mississippi State IP H R ER BB SO");
   const pitchingRows = [];
 
   if (msuPitchStart >= 0) {
-    const pitchBlock = text.substring(msuPitchStart, msuPitchStart + 800);
-    const pitchLineRegex = /([A-Z][a-zA-Z]+ [A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s*(?:\([WLS],\s*[\d-]+\))?\s+(\d+\.\d+|\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/g;
+    const pitchBlock = normalized.substring(msuPitchStart, msuPitchStart + 800);
+    // Handle both "First Last" and "Last, First" name formats
+    const pitchLineRegex = /([A-Z][a-zA-Z,]+ [A-Z]?[a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s*(?:\([WLS],\s*[\d-]+\))?\s+(\d+\.\d+|\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/g;
     let match;
     while ((match = pitchLineRegex.exec(pitchBlock)) !== null) {
       const [, name, ip, h, r, er, bb, so] = match;
       if (name.startsWith("Mississippi") || name.startsWith("Totals")) continue;
-      const pitchNameParts = name.trim().split(" ");
-      const pitchNameLast = pitchNameParts[pitchNameParts.length - 1].toLowerCase().replace(/(.)\1+/g, '$1');
+
+      let pitchNameLast;
+      if (name.includes(",")) {
+        pitchNameLast = name.split(",")[0].trim().toLowerCase().replace(/(.)\1+/g, '$1');
+      } else {
+        const parts = name.trim().split(" ");
+        pitchNameLast = parts[parts.length - 1].toLowerCase().replace(/(.)\1+/g, '$1');
+      }
+
       const pitcher = PITCHERS.find(p => {
         const pNameClean = p.name.toLowerCase().replace(/\s+jr\.?|\s+sr\.?/g, '');
         const pLast = pNameClean.split(" ").pop().replace(/(.)\1+/g, '$1');
@@ -98,7 +116,7 @@ function parseBoxScore(text) {
   }
 
   // --- Save ---
-  const saveMatch = text.match(/Save:\s*([^\(]+)/);
+  const saveMatch = normalized.match(/Save:\s*([^\(]+)/);
   if (saveMatch) {
     const saveName = saveMatch[1].trim();
     const savedRow = pitchingRows.find(row => {
@@ -109,15 +127,14 @@ function parseBoxScore(text) {
     if (savedRow) savedRow.sv = true;
   }
 
-  // --- Notes --- stop before any pitching table
+  // --- Notes ---
   const noteLabels = ["2B:", "3B:", "HR:", "SB:", "CS:", "HBP:", "SF:"];
   const noteLines = [];
   noteLabels.forEach(label => {
-    const match = text.match(new RegExp(label + "([^\n]+?)(?=\\s+(?:2B:|3B:|HR:|SB:|CS:|HBP:|SF:|[A-Z][a-z]+,|Alcorn|Hofstra|Delaware|Troy|Arizona|Play By Play|Start:))"));
+    const match = normalized.match(new RegExp(label + "([^\n]+?)(?=\\s+(?:2B:|3B:|HR:|SB:|CS:|HBP:|SF:|[A-Z][a-z]+,|Alcorn|Hofstra|Delaware|Troy|Arizona|Play By Play|Start:))"));
     if (match) noteLines.push(label + match[1].trim());
     else {
-      // simpler fallback — just grab to end of that token
-      const simple = text.match(new RegExp(label + "([^H][^\n]{0,120})"));
+      const simple = normalized.match(new RegExp(label + "([^H][^\n]{0,120})"));
       if (simple) noteLines.push(label + simple[1].trim());
     }
   });
